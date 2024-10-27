@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Add error handling
+set -e  # Exit on error
+
 echo "Initializing Object Store deployment..."
 
 # Initialize Docker Swarm if not already in swarm mode
@@ -14,24 +17,26 @@ fi
 if ! docker ps | grep -q "registry:2"; then
     echo "Starting local registry..."
     docker run -d -p 5000:5000 --restart=always --name registry registry:2
-    # Wait for registry to be ready
     sleep 5
 fi
 
-# Build images
+# Clean up any existing stack first
+if docker stack ls | grep -q "objectstore"; then
+    echo "Removing existing stack..."
+    docker stack rm objectstore
+    sleep 20  # Wait for cleanup
+fi
+
+# Build and push images
 echo "Building images..."
 docker compose build
 
-# Get the project name (directory name by default)
 PROJECT_NAME=$(basename $(pwd))
-
-# Tag images for local registry using project name
 echo "Tagging images..."
 docker tag ${PROJECT_NAME}-object-receiver:latest localhost:5000/object-receiver:latest
 docker tag ${PROJECT_NAME}-object-getter:latest localhost:5000/object-getter:latest
 docker tag ${PROJECT_NAME}-orchestrator:latest localhost:5000/orchestrator:latest
 
-# Push images to local registry
 echo "Pushing images to local registry..."
 docker push localhost:5000/object-receiver:latest
 docker push localhost:5000/object-getter:latest
@@ -41,35 +46,39 @@ docker push localhost:5000/orchestrator:latest
 echo "Deploying stack..."
 docker stack deploy -c docker-compose.yml objectstore
 
-# Function to check if all services are running
+# Improved service check function
 check_services() {
     local retries=0
     local max_retries=30
 
+    echo "Waiting for services to initialize..."
+    sleep 30  # Initial wait for services to start deploying
+
     while [ $retries -lt $max_retries ]; do
         echo "Checking service status (attempt $((retries + 1))/$max_retries)..."
         
-        # Get all services and their desired/running replicas
-        local services=$(docker service ls --format "{{.Name}} {{.Replicas}}")
-        local all_running=true
+        # Get service status
+        local services_status=$(docker service ls --format "{{.Name}},{{.Replicas}}")
+        local failed_services=()
         
-        while read -r service; do
-            local name=$(echo $service | cut -d' ' -f1)
-            local replicas=$(echo $service | cut -d' ' -f2)
-            local running=$(echo $replicas | cut -d'/' -f1)
-            local desired=$(echo $replicas | cut -d'/' -f2)
-            
-            if [ "$running" != "$desired" ]; then
-                all_running=false
-                echo "Service $name: $running/$desired replicas running"
-                break
+        while IFS=',' read -r name replicas; do
+            if [[ $name == objectstore_* ]]; then
+                local running=$(echo $replicas | cut -d'/' -f1)
+                local desired=$(echo $replicas | cut -d'/' -f2)
+                
+                if [ "$running" != "$desired" ]; then
+                    failed_services+=("$name: $running/$desired")
+                    echo "Service $name not ready"
+                fi
             fi
-        done <<< "$services"
+        done <<< "$services_status"
         
-        if [ "$all_running" = true ]; then
+        if [ ${#failed_services[@]} -eq 0 ]; then
+            echo "All services are running!"
             return 0
         fi
         
+        echo "Waiting for services to stabilize..."
         sleep 10
         retries=$((retries + 1))
     done
@@ -77,10 +86,38 @@ check_services() {
     return 1
 }
 
+# Update the MinIO health check function
+check_minio_health() {
+    echo "Checking MinIO health..."
+    local retries=0
+    local max_retries=15
+    
+    while [ $retries -lt $max_retries ]; do
+        if curl -sf http://localhost:9000/minio/health/live > /dev/null; then
+            echo "MinIO is healthy!"
+            return 0
+        fi
+        echo "Waiting for MinIO to be ready..."
+        sleep 5
+        retries=$((retries + 1))
+    done
+    
+    echo "ERROR: MinIO failed to become healthy"
+    docker service logs objectstore_minio1
+    return 1
+}
+
 # Wait for services to be ready
 if check_services; then
-    echo "Deployment complete! All services are running."
-    echo "Monitor logs with: docker service logs -f objectstore_orchestrator"
+    if check_minio_health; then
+        echo "Deployment complete! All services are running and healthy."
+        echo "Monitor logs with: docker service logs -f objectstore_orchestrator"
+    else
+        echo "Error: MinIO cluster is not healthy. Check logs for details."
+        docker service logs objectstore_minio1
+        docker service logs objectstore_minio2
+        exit 1
+    fi
 else
     echo "Error: Some services failed to start. Check logs for details."
     docker service ls

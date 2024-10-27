@@ -6,12 +6,15 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    networks:
+      - default
     deploy:
       replicas: 1
 
-  minio:
+  minio1:
     image: minio/minio
-    command: server --console-address ":9001" /data
+    hostname: minio1
+    command: server /data{1...4}  # Use 4 data directories
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -19,41 +22,57 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - minio_data:/data
+      - minio_data1:/data1
+      - minio_data2:/data2
+      - minio_data3:/data3
+      - minio_data4:/data4
+    networks:
+      - default
     deploy:
-      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
 
   object-receiver:
     image: localhost:5000/object-receiver:latest
     ports:
       - "8000:8000"
+    networks:
+      - default
     deploy:
-      replicas: 3
+      replicas: 5
     depends_on:
       - rabbitmq
-      - minio
+      - minio1
 
   object-getter:
     image: localhost:5000/object-getter:latest
     ports:
       - "8001:8000"
+    networks:
+      - default
     deploy:
       replicas: 3
     depends_on:
       - rabbitmq
-      - minio
+      - minio1
 
   orchestrator:
     image: localhost:5000/orchestrator:latest
     ports:
       - "8002:8000"
+    networks:
+      - default
     deploy:
       replicas: 1
     depends_on:
       - rabbitmq
 
 volumes:
-  minio_data:
+  minio_data1:
+  minio_data2:
+  minio_data3:
+  minio_data4:
 
 networks:
   default:

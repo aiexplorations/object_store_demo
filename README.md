@@ -150,9 +150,48 @@ Script completed
 ```
 
 
-- Scalability targets:
+### Scalability targets:
   - Writes: 1000+ requests/minute - perhaps we should be clear about the size of the objects being written?
   - Reads: 500+ requests/minute - again, perhaps we should be clear about the size of the objects being read?
+
+With a distributed set up for MinIO, and a greater number of replicas for the object receiver and object getter services, we should be able to handle a higher volume of requests both for reads and writes. However due to the distributed nature of the system, the performance will be impacted by network latency between the services.
+
+An example of the results with five MinIO nodes is as below:
+
+```bash
+$ python src/test/test.py 100 20 --size 1048576 --debug
+Script initialized
+2024-10-28 02:35:44,745 - INFO - Starting load test with 100 total requests
+2024-10-28 02:35:44,745 - INFO - Using 8 processes for concurrent execution
+2024-10-28 02:35:44,745 - INFO - Request size: ~1048576 bytes
+2024-10-28 02:35:44,754 - INFO - Operation mode: create
+2024-10-28 02:35:57,748 - INFO - ----- Test Complete -----
+2024-10-28 02:35:57,749 - INFO - Completed 100 requests, 100 successful
+2024-10-28 02:35:57,749 - INFO - Total time: 12.99 seconds
+2024-10-28 02:35:57,749 - INFO - Average rate: 7.70 requests/second
+2024-10-28 02:35:57,749 - INFO - Total data transferred: 102400.00 KB
+2024-10-28 02:35:57,749 - INFO - Data throughput: 7880.75 KB/second
+Script completed
+``` 
+Note that the throughput is lower than the single node case, and the time taken is higher!
+```bash
+$ python src/test/test.py 100 20 --size 1048576 --debug
+Script initialized
+2024-10-28 03:18:57,846 - INFO - Starting load test with 100 total requests
+2024-10-28 03:18:57,846 - INFO - Using 8 processes for concurrent execution
+2024-10-28 03:18:57,846 - INFO - Request size: ~1048576 bytes
+2024-10-28 03:18:57,846 - INFO - Operation mode: create
+2024-10-28 03:19:05,918 - INFO - ----- Test Complete -----
+2024-10-28 03:19:05,918 - INFO - Completed 100 requests, 100 successful
+2024-10-28 03:19:05,919 - INFO - Total time: 8.07 seconds
+2024-10-28 03:19:05,919 - INFO - Average rate: 12.39 requests/second
+2024-10-28 03:19:05,919 - INFO - Total data transferred: 102400.00 KB
+2024-10-28 03:19:05,919 - INFO - Data throughput: 12684.87 KB/second
+Script completed
+(venv) 
+```
+
+This is expected, as the distributed setup will have a higher latency due to the network overhead.
 
 2. **Storage Strategy**
    - MinIO for object persistence
@@ -204,24 +243,24 @@ Script completed
 
 ### Potential Improvements
 1. **Performance Optimizations**
-   - Implement caching layer
-   - Add read replicas for MinIO
-   - Optimize large file handling
+   - Implement caching layer 
+   - Add read replicas for MinIO - probably not needed
+   - Optimize large file handling - tried, and works well with the current setup; requires docker config changes and testing
 
 2. **Scalability Enhancements**
-   - Horizontal scaling of service instances
-   - Load balancing implementation
-   - Connection pooling for MinIO and RabbitMQ
+   - Horizontal scaling of service instances - implemented
+   - Load balancing implementation - implemented
+   - Connection pooling for MinIO and RabbitMQ - implemented
 
 3. **Reliability & Monitoring**
-   - Enhanced error handling
-   - Comprehensive metrics collection
-   - Circuit breakers for external services
+   - Enhanced error handling - not implemented
+   - Comprehensive metrics collection - not implemented
+   - Circuit breakers for external services - not implemented
 
 4. **Feature Additions**
-   - Object versioning
-   - Enhanced metadata search
-   - Compression support
+   - Object versioning - not implemented
+   - Enhanced metadata search - not implemented
+   - Compression support - not implemented
 
 ## Frontend
 To be implemented
