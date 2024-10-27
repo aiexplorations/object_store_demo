@@ -55,8 +55,6 @@ Some details of the current implementation:
    - Pagination support for object listing
    - Health check endpoints
 
-## Design Choices
-
 ### Performance Metrics
 Current throughput varies based on the size of the objects being written. Smaller objects are written faster, as can be expected. The below test writes 100KB objects.
 
@@ -162,7 +160,8 @@ Script completed
 ```
 
 
-### Scalability targets:
+
+1. Scalability targets:
   - Writes: 1000+ requests/minute - perhaps we should be clear about the size of the objects being written?
   - Reads: 500+ requests/minute - again, perhaps we should be clear about the size of the objects being read?
 
@@ -222,6 +221,11 @@ Script completed
 ```
 
 This is expected, as the distributed setup will have a higher latency due to the network overhead.
+## Design Choices
+1. **Scalability**
+   - The system is designed to be scalable, and can be deployed on a single node, or distributed across multiple nodes.
+   - The current implementation uses Docker Swarm Mode to orchestrate the services, and ensure that they are running and healthy.
+   - The services are designed to be stateless, and can be scaled horizontally to handle a higher volume of requests.
 
 2. **Storage Strategy**
    - MinIO for object persistence
@@ -234,6 +238,10 @@ This is expected, as the distributed setup will have a higher latency due to the
    - Heartbeat monitoring (600s timeout)
    - Async message processing with background tasks
    - Request-response pattern using reply queues
+
+4. **Consistency**
+   - The system is designed to be eventually consistent, and to handle three different types of objects.
+   - The system is designed to be reliable, and to handle failures gracefully.
 
 ## Technical Implementation
 
