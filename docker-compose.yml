@@ -1,115 +1,60 @@
-services:
-  minio:
-    image: minio/minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio_data:/data
-    command: server --console-address ":9001" /data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - app-network
+version: '3.8'
 
+services:
   rabbitmq:
     image: rabbitmq:3-management
     ports:
-      - "5673:5672"
+      - "5672:5672"
       - "15672:15672"
+    deploy:
+      replicas: 1
+
+  minio:
+    image: minio/minio
+    command: server --console-address ":9001" /data
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
-      - RABBITMQ_DEFAULT_VHOST=/
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - app-network
+      - minio_data:/data
+    deploy:
+      replicas: 1
 
   object-receiver:
-    build:
-      context: ./src/object_receiver_service
-      dockerfile: Dockerfile
+    image: localhost:5000/object-receiver:latest
     ports:
       - "8000:8000"
-    restart: on-failure
+    deploy:
+      replicas: 3
     depends_on:
-      rabbitmq:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    command: >
-      /bin/sh -c "
-        echo 'Waiting 20 seconds for services to be fully ready...' &&
-        sleep 20 &&
-        uvicorn object_receiver:app --host 0.0.0.0 --port 8000
-      "
-    environment:
-      - RABBITMQ_QUEUE_NAME=object_queue
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
-    networks:
-      - app-network
+      - rabbitmq
+      - minio
 
   object-getter:
-    build:
-      context: ./src/object_getter_service
-      dockerfile: Dockerfile
-      no_cache: true
+    image: localhost:5000/object-getter:latest
     ports:
       - "8001:8000"
-    restart: on-failure
+    deploy:
+      replicas: 3
     depends_on:
-      minio:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    command: >
-      /bin/sh -c "
-        echo 'Waiting 20 seconds for services to be fully ready...' &&
-        sleep 20 &&
-        uvicorn object_getter:app --host 0.0.0.0 --port 8000
-      "
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
-    networks:
-      - app-network
+      - rabbitmq
+      - minio
 
   orchestrator:
-    build:
-      context: ./src/orchestrator_service
-      dockerfile: Dockerfile
+    image: localhost:5000/orchestrator:latest
     ports:
       - "8002:8000"
-    restart: on-failure
+    deploy:
+      replicas: 1
     depends_on:
-      rabbitmq:
-        condition: service_healthy
-    command: >
-      /bin/sh -c "
-        echo 'Waiting 20 seconds for services to be fully ready...' &&
-        sleep 20 &&
-        uvicorn orchestrator:app --host 0.0.0.0 --port 8000
-      "
-    networks:
-      - app-network
+      - rabbitmq
 
 volumes:
   minio_data:
-  rabbitmq_data:
 
 networks:
-  app-network:
-    driver: bridge
+  default:
+    driver: overlay

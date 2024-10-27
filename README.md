@@ -10,67 +10,107 @@ A distributed object storage service built with FastAPI, RabbitMQ, and MinIO.
 - **Services**:
   - Object Getter Service (FastAPI)
   - Object Receiver Service (FastAPI)
+  - Orchestrator Service (FastAPI)
 
 ### Key Design Elements
+
 1. **Distributed Storage**
-   - Objects stored in MinIO with content-addressable storage
+   - Objects stored in MinIO with UUID-based naming
    - Support for three different object types (JSON, Image, PDF)
-   - Metadata stored separately from object data
-   - Support for large file uploads through chunking
+   - Content type verification using python-magic
+   - Bucket-based storage organization
 
 2. **Asynchronous Processing**
-   - Upload requests queued via RabbitMQ
-   - Separate services for read and write operations
-   - Background workers for object processing
+   - Three main queues:
+     - object_write_queue
+     - object_read_queue
+     - object_response_queue
+   - Message persistence enabled for reliability
+   - Correlation IDs for request tracking
 
 3. **API Design**
    - RESTful endpoints for object operations
-   - Streaming support for large objects
-   - Health check and monitoring endpoints
+   - Support for file uploads with MIME type validation
+   - Pagination support for object listing
+   - Health check endpoints
 
 ## Design Choices
 
 1. **Service Separation**
-   - Split read/write services for independent scaling
-   - Loose coupling through message queue
+   - Dedicated services for:
+     - Object receiving (writes)
+     - Object getting (reads)
+     - Request orchestration
+   - Each service runs in its own container
 
 2. **Storage Strategy**
-   - MinIO for object persistence (S3-compatible)
-   - Content-addressable storage for deduplication
-   - Chunked upload support for large files
+   - MinIO for object persistence
+   - UUID-based object naming with original filenames
+   - MIME type validation before storage
+   - Automatic bucket creation on service startup
 
 3. **Message Queue Integration**
-   - RabbitMQ for reliable async processing
-   - Dead letter queues for failed operations
-   - Message persistence for system reliability
+   - RabbitMQ with durable queues
+   - Heartbeat monitoring (600s timeout)
+   - Async message processing with background tasks
+   - Request-response pattern using reply queues
+
+## Technical Implementation
+
+### Services Configuration
+- Python 3.9 base images
+- FastAPI framework for all services
+- Common dependencies:
+  - fastapi
+  - uvicorn
+  - pika (RabbitMQ client)
+  - minio
+  - python-magic for file type detection
+
+### Error Handling
+- MIME type validation
+- Service availability checks
+- Request timeouts
+- Dead letter queues for failed operations
+
+### Monitoring
+- Health check endpoints
+- Logging with python-json-logger
+- Request tracking with correlation IDs
 
 ## Scale Considerations & Improvement Opportunities
 
-### Scale Target
-- Writes: Thousands per minute
-- Reads: Hundreds per minute
+### Current Capabilities
+- Supports multiple file types (JSON, Image, PDF)
+- Handles concurrent requests through async processing
+- Service-specific scaling possible through containerization
+- Current scale: 
+  - Writes: Hundreds per minute
+  - Reads: Hundreds per minute
+- Target scale:
+  - Writes: Thousands per minute
+  - Reads: Hundreds per minute
 
 ### Potential Improvements
-
 1. **Performance Optimizations**
-   - Implement caching layer (e.g., Redis)
+   - Implement caching layer
    - Add read replicas for MinIO
-   - Introduce CDN for frequently accessed objects
+   - Optimize large file handling
 
 2. **Scalability Enhancements**
    - Horizontal scaling of service instances
-   - Sharding strategy for object storage
-   - Load balancing improvements
+   - Load balancing implementation
+   - Connection pooling for MinIO and RabbitMQ
 
 3. **Reliability & Monitoring**
-   - Enhanced error handling and retry mechanisms
+   - Enhanced error handling
    - Comprehensive metrics collection
-   - Automated failover capabilities
+   - Circuit breakers for external services
 
 4. **Feature Additions**
-   - Object versioning support
-   - Compression for storage efficiency
-   - Enhanced metadata search capabilities
+   - Object versioning
+   - Enhanced metadata search
+   - Compression support
 
 ## Frontend
 To be implemented

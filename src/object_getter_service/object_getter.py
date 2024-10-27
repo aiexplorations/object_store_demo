@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from minio import Minio
 from typing import Dict, List, Optional
 import logging
@@ -88,6 +88,9 @@ async def startup_event():
         
         # Create background task for message consumption
         asyncio.create_task(consume_messages())
+        
+        # Add to startup_event in both services
+        channel.basic_qos(prefetch_count=100)
         
         logger.info("Successfully initialized services and started message consumer")
         
@@ -325,6 +328,14 @@ def handle_get_object(payload: Dict):
     except Exception as e:
         logger.error(f"Error getting object: {str(e)}")
         return {"error": str(e)}
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
 
 if __name__ == "__main__":
     import uvicorn

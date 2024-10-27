@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request
 from minio import Minio
 import pika
 import json
@@ -102,10 +102,52 @@ def process_message(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag)
 
 def handle_create_object(payload: Dict, request_id: str):
-    object_id = payload.get('object_id')
-    data = payload.get('data')
-    # Rest of the object creation logic
-    
+    """Handle creation of a simple object"""
+    try:
+        logger.info(f"Handling create_object request {request_id} with payload: {payload}")
+        
+        # Generate a unique object ID
+        object_id = str(uuid.uuid4())
+        data = payload.get('data')
+        
+        if not data:
+            logger.error(f"No data found in payload for request {request_id}")
+            return {"error": "No data provided"}
+            
+        # Store in MinIO
+        object_name = f"{object_id}.json"
+        json_data = {
+            'object_id': object_id,
+            'data': data,
+            'created_at': time.time()
+        }
+        encoded_data = json.dumps(json_data).encode('utf-8')
+        
+        logger.info(f"Attempting to store object {object_name} in MinIO")
+        
+        # Create BytesIO object from encoded data
+        data_stream = BytesIO(encoded_data)
+        
+        # Ensure bucket exists
+        if not minio_client.bucket_exists(BUCKET_NAME):
+            minio_client.make_bucket(BUCKET_NAME)
+            logger.info(f"Created bucket: {BUCKET_NAME}")
+        
+        minio_client.put_object(
+            BUCKET_NAME,
+            object_name,
+            data_stream,
+            length=len(encoded_data),
+            content_type='application/json'
+        )
+        
+        logger.info(f"Successfully stored object: {object_name}")
+        return {"message": "Object stored successfully", "object_id": object_id}
+        
+    except Exception as e:
+        logger.error(f"Error storing object for request {request_id}: {str(e)}", exc_info=True)
+        return {"error": str(e)}
+
 def handle_upload_image(payload: Dict, request_id: str):
     try:
         logger.info(f"Processing image upload request: {request_id}")
@@ -231,6 +273,9 @@ async def startup_event():
         
         # Start consuming in a background task
         asyncio.create_task(consume_messages())
+        
+        # Add to startup_event in both services
+        channel.basic_qos(prefetch_count=100)
         
         logger.info("Successfully initialized services")
         
@@ -389,6 +434,22 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.error(f"Error storing PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def batch_upload_to_minio(objects):
+    tasks = []
+    for obj in objects:
+        tasks.append(asyncio.create_task(upload_to_minio(obj)))
+    return await asyncio.gather(*tasks)
+
+# Add to both services
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

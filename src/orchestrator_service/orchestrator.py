@@ -22,29 +22,78 @@ WRITE_QUEUE = 'object_write_queue'
 READ_QUEUE = 'object_read_queue'
 RESPONSE_QUEUE = 'object_response_queue'
 
-# RabbitMQ connection
-rabbitmq_connection = None
-channel = None
+class RabbitMQConnection:
+    def __init__(self):
+        self.connection = None
+        self.channel = None
+        self.reconnect_delay = 1  # Start with 1 second delay
+        self.max_reconnect_delay = 30  # Maximum delay between reconnection attempts
+        
+    def connect(self):
+        try:
+            if self.connection is None or self.connection.is_closed:
+                self.connection = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        host='rabbitmq',
+                        credentials=pika.PlainCredentials('guest', 'guest'),
+                        heartbeat=600,  # Increase heartbeat timeout
+                        blocked_connection_timeout=300  # Add timeout for blocked connections
+                    )
+                )
+                self.channel = self.connection.channel()
+                
+                # Declare queues
+                self.channel.queue_declare(queue=WRITE_QUEUE, durable=True)
+                self.channel.queue_declare(queue=READ_QUEUE, durable=True)
+                self.channel.queue_declare(queue=RESPONSE_QUEUE, durable=True)
+                
+                logger.info("Successfully connected to RabbitMQ")
+                self.reconnect_delay = 1  # Reset delay after successful connection
+                return True
+        except Exception as e:
+            logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
+            return False
+            
+    def ensure_connection(self):
+        """Ensure that connection is open, reconnect if necessary"""
+        while True:
+            try:
+                if self.connection is None or self.connection.is_closed:
+                    if not self.connect():
+                        logger.warning(f"Connection failed, waiting {self.reconnect_delay}s before retry")
+                        time.sleep(self.reconnect_delay)
+                        self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+                        continue
+                return True
+            except Exception as e:
+                logger.error(f"Error ensuring connection: {str(e)}")
+                time.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
 
-def init_rabbitmq():
-    global rabbitmq_connection, channel
-    rabbitmq_connection = pika.BlockingConnection(
-        pika.ConnectionParameters(
-            host='rabbitmq',
-            credentials=pika.PlainCredentials('guest', 'guest')
-        )
-    )
-    channel = rabbitmq_connection.channel()
-    
-    # Declare queues
-    channel.queue_declare(queue=WRITE_QUEUE, durable=True)
-    channel.queue_declare(queue=READ_QUEUE, durable=True)
-    channel.queue_declare(queue=RESPONSE_QUEUE, durable=True)
+    def publish_message(self, queue, message, properties=None):
+        """Publish message with automatic reconnection"""
+        while True:
+            try:
+                if self.ensure_connection():
+                    self.channel.basic_publish(
+                        exchange='',
+                        routing_key=queue,
+                        body=message,
+                        properties=properties or pika.BasicProperties(delivery_mode=2)
+                    )
+                    return True
+            except Exception as e:
+                logger.error(f"Error publishing message: {str(e)}")
+                time.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+
+# Create global RabbitMQ connection handler
+rabbitmq_handler = RabbitMQConnection()
 
 @app.on_event("startup")
 async def startup_event():
     try:
-        init_rabbitmq()
+        rabbitmq_handler.connect()
         logger.info("Successfully initialized RabbitMQ connections")
     except Exception as e:
         logger.error(f"Failed to initialize service: {str(e)}")
@@ -54,22 +103,28 @@ async def startup_event():
 async def create_object(object_data: Dict):
     """Handle object creation requests"""
     try:
+        # Ensure data is in the correct format
+        if 'data' not in object_data:
+            raise HTTPException(status_code=400, detail="Request must include 'data' field")
+
         message = {
             'event_type': 'create_object',
-            'payload': object_data,
+            'payload': {
+                'data': object_data['data']  # Match the format expected by handle_create_object
+            },
             'request_id': str(uuid.uuid4())
         }
         
-        channel.basic_publish(
-            exchange='',
-            routing_key=WRITE_QUEUE,
-            body=json.dumps(message),
-            properties=pika.BasicProperties(
-                delivery_mode=2,  # make message persistent
-            )
-        )
+        logger.info(f"Sending create object request with payload: {message}")
         
-        return {"message": "Object creation request accepted", "request_id": message['request_id']}
+        if rabbitmq_handler.publish_message(
+            WRITE_QUEUE,
+            json.dumps(message)
+        ):
+            return {"message": "Object creation request accepted", "request_id": message['request_id']}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish message")
+            
     except Exception as e:
         logger.error(f"Error queuing object creation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -94,14 +149,14 @@ async def upload_image(file: UploadFile = File(...)):
             'request_id': str(uuid.uuid4())
         }
         
-        channel.basic_publish(
-            exchange='',
-            routing_key=WRITE_QUEUE,
-            body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-        
-        return {"message": "Image upload request accepted", "request_id": message['request_id']}
+        if rabbitmq_handler.publish_message(
+            WRITE_QUEUE,
+            json.dumps(message)
+        ):
+            return {"message": "Image upload request accepted", "request_id": message['request_id']}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish message")
+            
     except Exception as e:
         logger.error(f"Error queuing image upload: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -126,7 +181,7 @@ async def list_objects(
 
         # Create a dedicated response queue for this request
         response_queue = f"response_{request_id}"
-        response_channel = rabbitmq_connection.channel()
+        response_channel = rabbitmq_handler.connection.channel()
         response_channel.queue_declare(queue=response_queue, exclusive=True, auto_delete=True)
         
         response = None
@@ -146,37 +201,37 @@ async def list_objects(
 
         # Publish request with the dedicated response queue
         logger.info(f"Publishing list request for type: {type}, request_id: {request_id}")
-        channel.basic_publish(
-            exchange='',
-            routing_key=READ_QUEUE,
-            body=json.dumps(message),
+        if rabbitmq_handler.publish_message(
+            READ_QUEUE,
+            json.dumps(message),
             properties=pika.BasicProperties(
                 reply_to=response_queue,
                 correlation_id=request_id,
                 delivery_mode=2
             )
-        )
+        ):
+            # Wait for response with more frequent polling
+            timeout = 10  # seconds
+            start_time = time.time()
+            while response is None and time.time() - start_time < timeout:
+                response_channel.connection.process_data_events(time_limit=0.1)
+                await asyncio.sleep(0.01)
 
-        # Wait for response with more frequent polling
-        timeout = 10  # seconds
-        start_time = time.time()
-        while response is None and time.time() - start_time < timeout:
-            response_channel.connection.process_data_events(time_limit=0.1)
-            await asyncio.sleep(0.01)
+            # Clean up
+            try:
+                response_channel.basic_cancel(consumer_tag)  # Cancel consumer before deleting queue
+                response_channel.queue_delete(queue=response_queue)
+                response_channel.close()
+            except Exception as e:
+                logger.error(f"Error cleaning up response queue: {str(e)}")
 
-        # Clean up
-        try:
-            response_channel.basic_cancel(consumer_tag)  # Cancel consumer before deleting queue
-            response_channel.queue_delete(queue=response_queue)
-            response_channel.close()
-        except Exception as e:
-            logger.error(f"Error cleaning up response queue: {str(e)}")
+            if response is None:
+                raise HTTPException(status_code=408, detail="Request timeout")
 
-        if response is None:
-            raise HTTPException(status_code=408, detail="Request timeout")
-
-        return response
-
+            return response
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish message")
+            
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -198,7 +253,7 @@ async def get_object(object_id: str):
         
         # Create a dedicated response queue for this request
         response_queue = f"response_{request_id}"
-        response_channel = rabbitmq_connection.channel()
+        response_channel = rabbitmq_handler.connection.channel()
         response_channel.queue_declare(queue=response_queue, exclusive=True, auto_delete=True)
         
         response = None
@@ -218,52 +273,53 @@ async def get_object(object_id: str):
         
         # Publish request
         logger.info(f"Publishing get request for object: {object_id}")
-        channel.basic_publish(
-            exchange='',
-            routing_key=READ_QUEUE,
-            body=json.dumps(message),
+        if rabbitmq_handler.publish_message(
+            READ_QUEUE,
+            json.dumps(message),
             properties=pika.BasicProperties(
                 reply_to=response_queue,
                 correlation_id=request_id,
                 delivery_mode=2
             )
-        )
-        
-        # Wait for response with timeout
-        timeout = 10  # seconds
-        start_time = time.time()
-        while response is None and time.time() - start_time < timeout:
-            response_channel.connection.process_data_events(time_limit=0.1)
-            await asyncio.sleep(0.01)
-            
-        # Clean up
-        try:
-            response_channel.basic_cancel(consumer_tag)
-            response_channel.queue_delete(queue=response_queue)
-            response_channel.close()
-        except Exception as e:
-            logger.error(f"Error cleaning up response queue: {str(e)}")
-            
-        if response is None:
-            raise HTTPException(status_code=408, detail="Request timeout")
-            
-        if "error" in response:
-            raise HTTPException(status_code=404, detail=response["error"])
-            
-        # Handle different types of responses
-        if response['type'] == 'json':
-            return response['data']
-        elif response['type'] in ['image', 'pdf']:
-            content = bytes.fromhex(response['data'])
-            return StreamingResponse(
-                BytesIO(content),
-                media_type=response['mime_type'],
-                headers={
-                    "Content-Disposition": f"attachment; filename={response['filename']}"
-                }
-            )
+        ):
+            # Wait for response with timeout
+            timeout = 10  # seconds
+            start_time = time.time()
+            while response is None and time.time() - start_time < timeout:
+                response_channel.connection.process_data_events(time_limit=0.1)
+                await asyncio.sleep(0.01)
+                
+            # Clean up
+            try:
+                response_channel.basic_cancel(consumer_tag)
+                response_channel.queue_delete(queue=response_queue)
+                response_channel.close()
+            except Exception as e:
+                logger.error(f"Error cleaning up response queue: {str(e)}")
+                
+            if response is None:
+                raise HTTPException(status_code=408, detail="Request timeout")
+                
+            if "error" in response:
+                raise HTTPException(status_code=404, detail=response["error"])
+                
+            # Handle different types of responses
+            if response['type'] == 'json':
+                return response['data']
+            elif response['type'] in ['image', 'pdf']:
+                content = bytes.fromhex(response['data'])
+                return StreamingResponse(
+                    BytesIO(content),
+                    media_type=response['mime_type'],
+                    headers={
+                        "Content-Disposition": f"attachment; filename={response['filename']}"
+                    }
+                )
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported object type")
+                
         else:
-            raise HTTPException(status_code=400, detail="Unsupported object type")
+            raise HTTPException(status_code=500, detail="Failed to publish message")
             
     except HTTPException as he:
         raise he
@@ -291,14 +347,14 @@ async def upload_pdf(file: UploadFile = File(...)):
             'request_id': str(uuid.uuid4())
         }
         
-        channel.basic_publish(
-            exchange='',
-            routing_key=WRITE_QUEUE,
-            body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-        
-        return {"message": "PDF upload request accepted", "request_id": message['request_id']}
+        if rabbitmq_handler.publish_message(
+            WRITE_QUEUE,
+            json.dumps(message)
+        ):
+            return {"message": "PDF upload request accepted", "request_id": message['request_id']}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to publish message")
+            
     except Exception as e:
         logger.error(f"Error queuing PDF upload: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
