@@ -1,4 +1,4 @@
-# Object Store Demo
+# Sangraha - Object Store Demo
 A distributed object storage service built with FastAPI, RabbitMQ, and MinIO
 
 ## System Architecture
