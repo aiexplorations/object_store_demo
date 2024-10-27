@@ -66,11 +66,14 @@ services:
     build:
       context: ./src/object_getter_service
       dockerfile: Dockerfile
+      no_cache: true
     ports:
       - "8001:8000"
     restart: on-failure
     depends_on:
       minio:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     command: >
       /bin/sh -c "
@@ -81,6 +84,25 @@ services:
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
+    networks:
+      - app-network
+
+  orchestrator:
+    build:
+      context: ./src/orchestrator_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    restart: on-failure
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    command: >
+      /bin/sh -c "
+        echo 'Waiting 20 seconds for services to be fully ready...' &&
+        sleep 20 &&
+        uvicorn orchestrator:app --host 0.0.0.0 --port 8000
+      "
     networks:
       - app-network
 
