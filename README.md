@@ -1,6 +1,18 @@
 # Sangraha - Object Storage Service
 
-A distributed object storage service built with FastAPI, RabbitMQ, and MinIO.
+A distributed object storage service built with FastAPI, RabbitMQ, and MinIO. The benefit of this setup is that it is easily scalable, and can be deployed on a single node, or distributed across multiple nodes. 
+
+Some details of the current implementation:
+
+1. MinIO is used for object storage, RabbitMQ for message queueing, and FastAPI for the API layer. 
+2. The orchestrator service is responsible for managing the services, and ensuring that they are running and healthy.
+3. The object receiver service is responsible for receiving objects from the client, and storing them in MinIO.
+4. The object getter service is responsible for retrieving objects from MinIO, and returning them to the client.
+5. Docker Swarm Mode is used to orchestrate the services, and ensure that they are running and healthy.
+6. A local registry is used to store the Docker images for the services.
+7. Start and stop scripts are provided to start and stop the services, and clean up the Docker resources.
+8. A test script is provided to test the system's performance and scalability.
+
 
 ## System Architecture
 
@@ -189,6 +201,24 @@ Script initialized
 2024-10-28 03:19:05,919 - INFO - Data throughput: 12684.87 KB/second
 Script completed
 (venv) 
+```
+
+Another single node test:
+
+```bash
+$ python src/test/test.py 500 50 --size 1048576 --debug
+Script initialized
+2024-10-28 03:20:19,030 - INFO - Starting load test with 500 total requests
+2024-10-28 03:20:19,030 - INFO - Using 8 processes for concurrent execution
+2024-10-28 03:20:19,030 - INFO - Request size: ~1048576 bytes
+2024-10-28 03:20:19,030 - INFO - Operation mode: create
+2024-10-28 03:20:58,293 - INFO - ----- Test Complete -----
+2024-10-28 03:20:58,294 - INFO - Completed 500 requests, 500 successful
+2024-10-28 03:20:58,294 - INFO - Total time: 39.26 seconds
+2024-10-28 03:20:58,294 - INFO - Average rate: 12.73 requests/second
+2024-10-28 03:20:58,294 - INFO - Total data transferred: 512000.00 KB
+2024-10-28 03:20:58,295 - INFO - Data throughput: 13040.49 KB/second
+Script completed
 ```
 
 This is expected, as the distributed setup will have a higher latency due to the network overhead.
